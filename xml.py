@@ -17,6 +17,7 @@ class OtherError(Error_): pass
 class ProgrammerError(OtherError): pass
 
 import sys
+import traceback
 import jsparser as js
 from lxml.builder import E
 import lxml.etree as ET
@@ -51,7 +52,7 @@ def o(n, i, c, handledattrs=[]):
                     "indentLevel", "index", "insert", "lineno", "pop",
                     "remove", "reverse", "sort", "tokenizer", "type", "type_"],
                     optattrs=["end", "start", "value"])
-        #print n.type
+        print n.type
         if n.type == "ARRAY_INIT":
             check(subnodes=len(n))
             e = E.ARRAY_INIT()
@@ -71,21 +72,19 @@ def o(n, i, c, handledattrs=[]):
             check(subnodes=2)
             s = "("
             if getattr(n[0],"assignOp", None) is not None:
+                print n[0].assignOp
                 s += "UPDATE%s " % props() + js.tokens[n[0].assignOp]
                 #print js.tokens[n[0].assignOp]
                 e = E.UPDATE()
+                e.append(E.OPERATOR(js.tokens[n[0].assignOp]))
             else:
                 s += "ASSIGN%s" % props()
-                #print n[0].assignOp
-                #print js.tokens[n[0].assignOp]
                 e = E.ASSIGN()
-            #print n[0]
-            #print n[1]
             e.append(o(n[0], i, c, handledattrs=["assignOp"]))
             e.append(o(n[1], i, c))
             return e
-            return s + " %s %s)" % (o(n[0], i, c, handledattrs=["assignOp"]),
-                    o(n[1], i, c))
+            #return s + " %s %s)" % (o(n[0], i, c, handledattrs=["assignOp"]),
+                    #o(n[1], i, c))
 
         elif n.type == "BLOCK":
             check(subnodes=len(n))
@@ -94,9 +93,10 @@ def o(n, i, c, handledattrs=[]):
                 for x in n:
                     e.append(o(x,i+"  ",c))
                 return e
-                return ("(BLOCK%s\n  " % props()) + i + \
-                        ("\n  "+i).join((o(x,i+"  ",c) for x in n)) + ")"
-            return "(BLOCK%s)" % props()
+                #return ("(BLOCK%s\n  " % props()) + i + \
+                        #("\n  "+i).join((o(x,i+"  ",c) for x in n)) + ")"
+            return E.BLOCK()
+            #return "(BLOCK%s)" % props()
 
         elif n.type in ("BREAK", "CONTINUE"):
             check(attrs=["target"], optattrs=["label"])
@@ -120,6 +120,7 @@ def o(n, i, c, handledattrs=[]):
             check(attrs=["block","guard","varName"])
 
             if n.guard is not None:
+                return E.GUARDED_CATCH(n.varName, o(n.guard,i,c), o(n.block,i,c))
                 return "(GUARDED-CATCH%s %s %s %s)" % (props(), n.varName,
                         o(n.guard,i,c), o(n.block,i,c))
             return E.CATCH(E.VAR(n.varName), E.BLOCK(o(n.block,i,c)))
@@ -154,7 +155,7 @@ def o(n, i, c, handledattrs=[]):
         elif n.type == "DO":
             check(attrs=["body", "condition", "isLoop"])
             assert n.isLoop
-            return E.DO()
+            return E.DO_WHILE(o(n.condition,i,c), o(n.body,i,c))
             return "(DO-WHILE%s %s %s)" % (props(), o(n.condition,i,c),
                     o(n.body,i,c))
 
@@ -167,13 +168,21 @@ def o(n, i, c, handledattrs=[]):
             check(attrs=["functionForm","params","body"],
                     optattrs=["name"])
             if n.functionForm == 0:
-                return E.DEF_FUNCTION()
+                e = E.DEF_FUNCTION(E.NAME(n.name))
+                for param in n.params:
+                    e.append(E.PARAM(param))
+                e.append(E.BODY(o(n.body,i,c)))
+                return e
                 return "(DEF-FUNCTION%s (%s%s) %s)" % (props(), n.name,
                         "".join(" " + param for param in n.params),
                         o(n.body,i,c))
             else:
-                print n.params
-                return E.FUNCTION(E.BODY(o(n.body,i,c)))
+                #print n.params
+                e = E.FUNCTION()
+                for param in n.params:
+                    e.append(E.PARAM(param))
+                e.append(E.BODY(o(n.body,i,c)))
+                return e
                 return "(FUNCTION%s (%s) %s)" % (props(), " ".join(n.params),
                         o(n.body,i,c))
 
@@ -224,7 +233,7 @@ def o(n, i, c, handledattrs=[]):
             if hasattr(n,"name"): assert n.name == n.value
 
             if hasattr(n,"initializer"):
-                return E.INITVAR(E.VALUE(n.value), o(n.initializer, i, c))
+                return E.INITVAR(E.IDENTIFIER(n.value), o(n.initializer, i, c))
                 return "(INITVAR%s %s %s)" % (props(), n.value,
                         o(n.initializer, i, c))
             return E.IDENTIFIER(str(n.value))
@@ -242,19 +251,26 @@ def o(n, i, c, handledattrs=[]):
                         o(n.elsePart, i+"  ", c))
             return E.IF(E.CONDITION(o(n.condition,i,c)),
                         E.THEN(o(n.thenPart, i+"  ",c)))
-            return "(IF%s %s\n  %s%s)" % (props(), o(n.condition,i,c), i,
-                    o(n.thenPart, i+"  ",c))
+            #return "(IF%s %s\n  %s%s)" % (props(), o(n.condition,i,c), i,
+                    #o(n.thenPart, i+"  ",c))
 
         elif n.type in ("INCREMENT", "DECREMENT"):
             check(optattrs=["postfix"], subnodes=1)
             if getattr(n, "postfix", False):
-                return "(POST-%s%s %s)" % (n.type, props(), o(n[0], i, c))
-            return "(%s%s %s)" % (n.type, props(), o(n[0], i, c))
+                e = ET.Element("POST_%s" % n.type.upper())
+                #print e, o(n[0], i, c)
+                e.append(o(n[0], i, c))
+                return e
+                #return "(POST-%s%s %s)" % (n.type, props(), o(n[0], i, c))
+            e = ET.Element(n.type.upper())
+            e.append(o(n[0], i, c))
+            return e
+            #return "(%s%s %s)" % (n.type, props(), o(n[0], i, c))
 
         elif n.type == "INDEX":
             check(subnodes=2)
-            return E.INDEX()
-            return "(ARRAY-INDEX%s %s %s)" % (props(), o(n[0],i,c), o(n[1],i,c))
+            return E.ARRAY_INDEX(o(n[0],i,c), o(n[1],i,c))
+            #return "(ARRAY-INDEX%s %s %s)" % (props(), o(n[0],i,c), o(n[1],i,c))
 
         elif n.type == "LABEL":
             check(attrs=["label","statement"])
@@ -268,20 +284,20 @@ def o(n, i, c, handledattrs=[]):
             for x in n:
                 e.append(o(x, i, c))
             return e
-            return ''.join((' ' + o(x, i, c) for x in n))
+            #return ''.join((' ' + o(x, i, c) for x in n))
 
         elif n.type == "NEW_WITH_ARGS":
             check(subnodes=2)
             return E.NEW_WITH_ARGS(o(n[0],i,c), o(n[1],i,c))
-            return "(%s%s %s %s)" % (n.value.upper(), props(), o(n[0],i,c),
-                    o(n[1],i,c))
+            #return "(%s%s %s %s)" % (n.value.upper(), props(), o(n[0],i,c),
+                    #o(n[1],i,c))
 
         elif n.type in ("NUMBER",):
             return E.NUMBER(str(n.value))
 
         elif n.type in ("TRUE", "FALSE", "THIS", "NULL"):
             return ET.Element(n.type)
-            return str(n.value).upper()
+            #return str(n.value).upper()
 
         elif n.type == "OBJECT_INIT":
             check(subnodes=len(n))
@@ -290,9 +306,10 @@ def o(n, i, c, handledattrs=[]):
                 for x in n:
                     e.append(o(x,i+"  ",c))
                 return e
-                return ("(OBJECT_INIT%s\n  " % props() + i +
-                        ("\n  "+i).join(o(x,i+"  ",c) for x in n) + ")")
-            return "(OBJECT-INIT%s)" % props()
+                #return ("(OBJECT_INIT%s\n  " % props() + i +
+                        #("\n  "+i).join(o(x,i+"  ",c) for x in n) + ")")
+            return e
+            #return "(OBJECT-INIT%s)" % props()
 
         elif n.type in ("PLUS", "LT", "EQ", "AND", "OR", "MINUS", "MUL", "LE",
                 "NE", "STRICT_EQ", "DIV", "GE", "INSTANCEOF", "IN", "GT",
@@ -303,8 +320,8 @@ def o(n, i, c, handledattrs=[]):
             e.append(o(n[0],i,c))
             e.append(o(n[1],i,c))
             return e
-            return "(%s%s %s %s)" % (n.type.replace('_', '-'), props(),
-                    o(n[0],i,c), o(n[1],i,c))
+            #return "(%s%s %s %s)" % (n.type.replace('_', '-'), props(),
+                    #o(n[0],i,c), o(n[1],i,c))
 
         elif n.type == "PROPERTY_INIT":
             check(subnodes=2)
@@ -320,10 +337,11 @@ def o(n, i, c, handledattrs=[]):
                     n.value["modifiers"])
 
         elif n.type == "RETURN":
-            return E.RETURN()
             if type(n.value) == str:
-                return "(RETURN%s %r)" % (props(), n.value)
-            return "(RETURN%s %s)" % (props(), o(n.value, i, c))
+                return E.RETURN(n.value)
+                #return "(RETURN%s %r)" % (props(), n.value)
+            return E.RETURN(o(n.value, i, c))
+            #return "(RETURN%s %s)" % (props(), o(n.value, i, c))
 
         elif n.type == "SCRIPT":
             check(attrs=["funDecls","varDecls"], subnodes=len(n))
@@ -333,9 +351,10 @@ def o(n, i, c, handledattrs=[]):
                 for x in n:
                     e.append(o(x,i+"  ",c))
                 return e
-                return ("(SCRIPT%s\n  " % props() + i +
-                        ("\n  "+i).join((o(x,i+"  ",c) for x in n)) + ")")
-            return "(SCRIPT%s)" % props()
+                #return ("(SCRIPT%s\n  " % props() + i +
+                        #("\n  "+i).join((o(x,i+"  ",c) for x in n)) + ")")
+            return e
+            #return "(SCRIPT%s)" % props()
 
         elif n.type == "SEMICOLON":
             check(attrs=["expression"])
@@ -343,41 +362,53 @@ def o(n, i, c, handledattrs=[]):
                 #return "(BLOCK)"
                 return E.BLOCK()
             #return E.SEMICOLON(o(n.expression, i, c))
+            #print n.expression
             return o(n.expression, i, c)
 
         elif n.type == "STRING":
             return E.STRING(n.value)
-            return repr(n.value)
+            #return repr(n.value)
 
         elif n.type == "SWITCH":
             check(attrs=["cases", "defaultIndex", "discriminant"])
             assert (n.defaultIndex == -1 or
                     n.cases[n.defaultIndex].type == "DEFAULT")
             return E.SWITCH()
-            return "(SWITCH%s %s\n  %s%s)" % (props(), o(n.discriminant,i,c), i,
-                    ("\n  "+i).join(o(x,i+"  ",c) for x in n.cases))
+            #return "(SWITCH%s %s\n  %s%s)" % (props(), o(n.discriminant,i,c), i,
+                    #("\n  "+i).join(o(x,i+"  ",c) for x in n.cases))
 
         elif n.type == "THROW":
             check(attrs=["exception"])
-            return E.THROW()
-            return "(THROW%s %s)" % (props(), o(n.exception,i,c))
+            return E.THROW(o(n.exception,i,c))
+            #return "(THROW%s %s)" % (props(), o(n.exception,i,c))
 
         elif n.type == "TRY":
             check(attrs=["catchClauses","tryBlock"], optattrs=["finallyBlock"])
-            return E.TRY()
+
             if hasattr(n,"finallyBlock"):
-                return "(TRY-FINALLY%s\n  " % props() + i + ("\n  "+i).join(
-                        [o(n.tryBlock,i+"  ",c)] + [o(x,i+"  ",c)
-                        for x in n.catchClauses] + \
-                        [o(n.finallyBlock,i+"  ",c)]) + ")"
-            return "(TRY%s\n  " % props() + i + ("\n  "+i).join(
-                    [o(n.tryBlock,i+"  ",c)] + [o(x,i+"  ",c)
-                    for x in n.catchClauses]) + ")"
+                e = E.TRY_FINALLY()
+                e.append(o(n.tryBlock,i+"  ",c))
+                for x in n.catchClauses:
+                    e.append(o(x,i+"  ",c))
+                e.append(o(n.finallyBlock,i+"  ",c))
+                return e
+                #return "(TRY-FINALLY%s\n  " % props() + i + ("\n  "+i).join(
+                        #[o(n.tryBlock,i+"  ",c)] + [o(x,i+"  ",c)
+                        #for x in n.catchClauses] + \
+                        #[o(n.finallyBlock,i+"  ",c)]) + ")"
+            e = E.TRY()
+            e.append(o(n.tryBlock,i+"  ",c))
+            for x in n.catchClauses:
+                e.append(o(x,i+"  ",c))
+            return e
+            #return "(TRY%s\n  " % props() + i + ("\n  "+i).join(
+                    #[o(n.tryBlock,i+"  ",c)] + [o(x,i+"  ",c)
+                    #for x in n.catchClauses]) + ")"
 
         elif n.type in ("VAR", "CONST"):
             check(subnodes=len(n))
             e = ET.Element(n.type)
-            e.append(E.VALUE(n.value.upper()))
+            #e.append(E.VALUE(n.value.upper()))
             for x in n:
                 e.append(o(x,i,c))
             return e
@@ -386,24 +417,28 @@ def o(n, i, c, handledattrs=[]):
 
         elif n.type == "WITH":
             check(attrs=["body", "object"])
-            return E.WITH()
+            return E.WITH(o(n.object,i,c), o(n.body,i,c))
             sys.stderr.write("WARNING: A bad person wrote the code being "
                     "parsed. Don't use 'with'!\n")
             return "(WITH%s %s %s)" % (props(), o(n.object,i,c), o(n.body,i,c))
 
         elif n.type == "WHILE":
             check(attrs=["condition","body","isLoop"])
-            return E.WHILE()
             assert n.isLoop
-            return "(WHILE%s %s\n  %s%s)" % (props(), o(n.condition,i,c), i,
-                    o(n.body, i+"  ",c))
+            cond = E.CONDITION(o(n.condition,i,c))
+            body = E.BODY(o(n.body, i+"  ",c))
+            return E.WHILE(cond, body)
+            #return "(WHILE%s %s\n  %s%s)" % (props(), o(n.condition,i,c), i,
+                    #o(n.body, i+"  ",c))
 
         else:
             raise UnknownNode, "Unknown type %s" % n.type
     except Exception, e:
-        had_error = True
-        raise OtherError("%s\nException in node %s on line %s" % (e, n.type,
-                getattr(n, "lineno", None)))
+        traceback.print_exc(e)
+        raise e
+        #had_error = True
+        #raise OtherError("%s\nException in node %s on line %s" % (e, n.type,
+                #getattr(n, "lineno", None)))
     finally:
         if not had_error:
             realkeys = [x for x in dir(n) if x[:2] != "__"]
@@ -446,5 +481,9 @@ if __name__ == "__main__":
     except:
         include_props = False
 
-    print ET.tostring(convert(js.parse(sys.stdin.read()), include_props),
-                      pretty_print=True)
+    tree = js.parse(sys.stdin.read(), include_props)
+    print tree
+
+    parsed = convert(tree)
+    print ET.tostring(parsed, pretty_print=True)
+    #print parsed.xpath('.//STRING/text()')
